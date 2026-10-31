@@ -1,3 +1,10 @@
-ATNN_Base/.venv/
+# Python environment
+.venv/
 __pycache__/
 *.pyc
+
+# IDE
+.vscode/
+
+# Temporary files
+*.log

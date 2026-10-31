@@ -143,6 +143,11 @@ class Model:
         self.lamda = 5000
         self.dataSet = None
         self.confid = 3
+        # Branch utility tracking
+        self.branchUsage = {0: 0}
+        self.branchLastUsed = {0: 0}
+        # Branch status tracking
+        self.branchStatus = {0: "active"}
 
         self.init_model()
 
@@ -197,6 +202,10 @@ class Model:
         self.branchNum = self.branchNum + 1
         self.branchList.append(self.branchNum)
         self.activeBranch = self.branchNum
+        # Initialize utility tracking for the new branch
+        self.branchUsage[self.branchNum] = 0
+        self.branchLastUsed[self.branchNum] = self.trainTimes
+        self.branchStatus[self.branchNum] = "active"
         for i in range(1):
             self.add_child_node(parent,self.branchNum)
             parent = parent.childList[-1]
@@ -234,8 +243,15 @@ class Model:
             node.classifierOutput = softmax(node.classifierInput)
 
         for child in node.childList:
-            if not self.driftAlert and child.branchType != self.activeBranch and child.branchType != 0:
-                continue
+            branch = child.branchType
+            if branch == 0:
+                pass
+            elif not self.driftAlert:
+                if self.branchStatus.get(branch) == "dormant":
+                    continue
+                if branch != self.activeBranch:
+                    continue
+
             self.forward_propagation(child,node.hideOutput)
 
     def back_propagation(self, node, trueLabel):
@@ -302,10 +318,11 @@ class Model:
 
 
     def del_branch(self,node,branchType):
-        for child in node.childList:
-            self.del_branch(child,branchType)
-        if node.branchType == branchType:
-            node.parent.childList.remove(node)
+        for child in list(node.childList):
+            if child.branchType == branchType:
+                node.childList.remove(child)
+            else:
+                self.del_branch(child, branchType)
 
     def get_active_node_list(self):
         return self.nodeList[self.activeBranch]
@@ -329,8 +346,18 @@ class Model:
     def get_model_output(self):
         modelOutput = {}
         for branch,nodeList in self.nodeList.items():
-            branchOutput = sum([node.classifierOutput * node.weight for node in nodeList])
+            
+            if self.branchStatus.get(branch, "active") == "dormant":
+                if not self.driftAlert:
+                    continue
+
+            branchOutput = sum(
+                [node.classifierOutput * node.weight for node in nodeList]
+            )
+
             modelOutput[branch] = branchOutput / sum(branchOutput)
+
+            
         return modelOutput
 
     def update_branch_predict_loss(self,modelOutput,label):
@@ -340,6 +367,89 @@ class Model:
             self.lossList[branch].append(cross_entropy(branchOutput, label))
             if len(self.lossList[branch]) > self.lossLen:
                 self.lossList[branch] = self.lossList[branch][-self.lossLen:]
+
+    def calculate_branch_utility(self):
+        utilityScores = {}
+
+        maxUsage = max(self.branchUsage.values()) if self.branchUsage else 1
+
+        for branch in self.branchUsage:
+
+        # 1. Usage score
+            usageScore = self.branchUsage[branch] / (maxUsage + 0.000001)
+
+        # 2. Prediction performance score
+            if branch in self.lossStatisticsList:
+                currentLoss = self.lossStatisticsList[branch]["mean"]
+                historicalLoss = self.lossStatisticsList[branch]["prev_mean"]
+
+                bestLoss = min(currentLoss, historicalLoss)
+                performanceScore = 1 / (1 + max(bestLoss, 0))
+            else:
+                performanceScore = 0.5
+
+        # 3. Recency score
+            lastUsed = self.branchLastUsed.get(branch, 0)
+            timeSinceLastUsed = self.trainTimes - lastUsed
+
+            recencyScore = 1 / (1 + timeSinceLastUsed / 1000)
+
+        # 4. Combined utility score
+            utility = (
+                0.4 * performanceScore +
+                0.3 * usageScore +
+                0.3 * recencyScore
+            )
+
+            utilityScores[branch] = utility
+
+        return utilityScores
+
+    def select_branch_for_pruning(self):
+    # Calculate utility scores
+        utilityScores = self.calculate_branch_utility()
+
+    # Do not consider the currently active branch
+        candidates = [
+            branch for branch in self.branchList
+            if branch != self.activeBranch
+        ]
+
+    # No eligible branch available
+        if not candidates:
+            return None
+
+    # Select the branch with the lowest utility
+        branchToPrune = min(
+            candidates,
+            key=lambda branch: utilityScores.get(branch, 0)
+        )
+
+        return branchToPrune
+
+    def prune_branch(self, branchToPrune):
+
+    # Never deactivate the base or active branch
+        if branchToPrune == 0 or branchToPrune == self.activeBranch:
+            print("Cannot prune the base or active branch.")
+            return False
+
+    # Check whether the branch exists
+        if branchToPrune not in self.branchList:
+            print("Branch does not exist.")
+            return False
+
+    # Check whether it is already dormant
+        if self.branchStatus.get(branchToPrune) == "dormant":
+            print("Branch is already dormant.")
+            return False
+
+    # Soft pruning: deactivate without deleting
+        self.branchStatus[branchToPrune] = "dormant"
+
+        print(f"Branch {branchToPrune} successfully deactivated.")
+
+        return True
 
     def update_loss_statistics(self):
         for branch,lossList in self.lossList.items():
@@ -428,6 +538,9 @@ class Model:
         self.update_model(model)
         activeNodeList = self.get_active_node_list()
         self.update_weight_by_loss(activeNodeList, label)
+        # Update branch usage statistics
+        self.branchUsage[self.activeBranch] += 1
+        self.branchLastUsed[self.activeBranch] = self.trainTimes
         self.trainTimes = self.trainTimes + 1
         self.model_grow_and_prune()
         if self.alertNum == self.splitLen:
@@ -503,4 +616,6 @@ def main():
         print("-----------------------------")
         print("start train : ",dataSet)
         onlineLearning(dataSet)
-main()
+
+if __name__ == "__main__":
+    main()
