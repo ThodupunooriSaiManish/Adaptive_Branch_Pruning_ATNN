@@ -209,13 +209,29 @@ class Model:
         for i in range(1):
             self.add_child_node(parent,self.branchNum)
             parent = parent.childList[-1]
-        if len(self.branchList) > self.maxBranchNum:
-            delBranch = self.branchList[0]
-            self.branchList = self.branchList[1:]
-            self.del_branch(self.model,delBranch)
-            del self.lossStatisticsList[delBranch]
-            del self.lossList[delBranch]
-            del self.nodeList[delBranch]
+        while len(self.branchList) > self.maxBranchNum:
+            delBranch = None
+            for branch in self.branchList:
+                if branch != 0 and branch != self.activeBranch and self.branchStatus.get(branch) != "dormant":
+                    delBranch = branch
+                    break
+            if delBranch is not None:
+                self.branchList.remove(delBranch)
+                self.del_branch(self.model, delBranch)
+                if delBranch in self.lossStatisticsList:
+                    del self.lossStatisticsList[delBranch]
+                if delBranch in self.lossList:
+                    del self.lossList[delBranch]
+                if delBranch in self.nodeList:
+                    del self.nodeList[delBranch]
+                if delBranch in self.branchStatus:
+                    del self.branchStatus[delBranch]
+                if delBranch in self.branchUsage:
+                    del self.branchUsage[delBranch]
+                if delBranch in self.branchLastUsed:
+                    del self.branchLastUsed[delBranch]
+            else:
+                break
 
     def add_child_node(self,parentNode,branchType,weight = None):
         child = NODE(self.hNeuronNum,self.cNeuronNum,branchType)
@@ -451,6 +467,24 @@ class Model:
 
         return True
 
+    def reactivate_branch(self, branchToReactivate):
+        # Check whether the branch exists
+        if branchToReactivate not in self.nodeList:
+            print("Branch does not exist.")
+            return False
+
+        # Check whether it is already active
+        if self.branchStatus.get(branchToReactivate) == "active" and self.activeBranch == branchToReactivate:
+            print("Branch is already active.")
+            return False
+
+        # Reactivate branch: update status and active branch
+        self.branchStatus[branchToReactivate] = "active"
+        self.activeBranch = branchToReactivate
+
+        print(f"Branch {branchToReactivate} successfully reactivated.")
+        return True
+
     def update_loss_statistics(self):
         for branch,lossList in self.lossList.items():
             if len(lossList) < self.lossLen:
@@ -509,10 +543,12 @@ class Model:
             self.lastDriftTime = self.trainTimes
             self.reset_weight()
         else:
-            if minLossBranch != self.activeBranch:
-                self.activeBranch = minLossBranch
+            if self.branchStatus.get(minLossBranch) == "dormant":
+                self.reactivate_branch(minLossBranch)
             else:
-                pass
+                if minLossBranch != self.activeBranch:
+                    self.activeBranch = minLossBranch
+                self.branchStatus[minLossBranch] = "active"
         self.driftAlert = 0
         self.alertNum = 0
         for node in self.nodeList[0]:
